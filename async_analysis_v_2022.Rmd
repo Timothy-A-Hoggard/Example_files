@@ -1,0 +1,291 @@
+---
+title: "Tk"
+output: 
+  bookdown::pdf_document2:
+    latex_engine: xelatex
+    toc: yes
+    number_sections: no
+  html_document: default
+date: |
+  `r Sys.Date()`
+geometry:
+  top=10mm,
+  bottom=15mm,
+  left=10mm,
+  right=10mm
+header-includes:
+  \usepackage{float}
+  \floatplacement{figure}{H}
+params:
+  dir: "~/Dropbox/Rprojects/Flow_cytometry/data_allison_hollatz/2022_10_13/"
+---
+
+<!-- The following Rmd will read FCS files obtained from a flow cytometer and standarizes gating (i.e. filtering) parameters for processing the flow cytometry data for objective processing of files that contrasts with subjective parameters used in proprietary, licensed software. The code in this document is a freeware improvement from that provided by such software as FloJo. -->
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE, error = FALSE, dev = "cairo_pdf", echo = FALSE, fig.align = "center")
+```
+
+\newpage
+
+```{r packages, include = TRUE, echo = FALSE}
+library(BiocManager)
+library(flowCore)
+#library(ggcyto)
+library(parallel)
+library(tidyverse)
+library(ggpubr)
+
+extrafont::loadfonts(quiet = T, dev = "pdf")
+
+theme_set(
+  theme_classic(base_size = 20, base_family = "Arial")
+)
+```
+
+# Code
+
+## Use the package \underline{flowCore} to read an FCS file.\
+
+```{r read-fcs}
+files <- list.files(
+  path = params$dir,
+  pattern = "*.fcs",
+  full.names = T
+)
+
+fcs <- files %>% as_tibble_col("file") %>% separate(
+  file, 
+  c("remove", "keep"), 
+  sep = "//",
+  remove = FALSE
+) %>% select(
+  -remove
+) %>% separate(
+  keep,
+  c("id"),
+  sep = "_"
+) %>% mutate(
+  id = str_remove(id, "ajh-")
+) %>% split(., .$id) %>% lapply(., function(x){
+  x <- read.FCS(x$file) %>% .@exprs %>% as_tibble() %>% dplyr::select(`FL1-A`, `FL1-H`) %>% rename(
+    A = `FL1-A`,
+    H = `FL1-H`
+  ) %>% mutate(
+    time = x$id
+  )
+})
+
+
+```
+
+## Make ungated figure(s)
+
+```{r make-ungated-figure}
+fl1a_v_fl1h <- fcs %>% lapply(., function(x){
+  graph <- x %>% ggplot(., aes(
+    x = A,
+    y = H
+  )) + geom_bin_2d(bins = 1000) + scale_x_log10() + scale_y_log10() + scale_fill_viridis_c() + ggtitle(unique(x$time)) + theme(
+    legend.position = c(0.125, 0.75),
+    legend.title = element_blank(), 
+    plot.title = element_text(hjust = 0.5)
+  )
+})
+
+ungated_density <- fcs %>% lapply(., function(x){
+  x <- x %>% ggplot(., aes(x = A)) + geom_density(lwd = 1.25) + ggtitle(unique(x$time))
+})
+
+ungated_figures <- fl1a_v_fl1h
+for(i in 1:length(ungated_figures)){
+  ungated_figures[[i]] <- annotate_figure(ggarrange(ncol = 2, fl1a_v_fl1h[[i]] + theme(plot.title = element_blank()), ungated_density[[i]] + theme(plot.title = element_blank())), text_grob(names(fl1a_v_fl1h)[i], size = 25, family = "Arial", face = "bold"))
+}
+
+ungated_combined_figures <- ggarrange(
+  ncol = 1, 
+  nrow = length(names(ungated_figures)),
+  plotlist = ungated_figures,
+  labels = LETTERS[c(1:8)],
+  font.label = list(
+    size = 25, 
+    face = "bold",
+    family = "Arial"
+  )
+)
+
+
+```
+
+## Gate by area and height
+
+```{r gating}
+f_gating <- function(x){
+  key <- x %>% dplyr::select(signature) %>% unique(.)
+  scatter <- x %>% ggplot(., aes(
+    x = A,
+    y = H
+  )) + geom_bin_2d(bins = 1000) + scale_x_log10() + scale_y_log10() + scale_fill_viridis_c()
+  scatter_data <- scatter %>% ggplot_build(.) %>% .$data %>% .[[1]] %>% dplyr::select(x,y,ndensity) %>% dplyr::filter(
+    ndensity  >= 0.65
+  ) %>% mutate(
+    x = 10^x,
+    y = 10^y
+  )
+  gates <- scatter_data %>% mutate(
+    signature = key$signature,
+  ) %>% group_by(
+    signature
+  ) %>% summarise(
+    xmin = min(x),
+    xmax = max(x),
+    xmean = mean(x),
+    .groups = "drop"
+  ) %>% mutate(
+    range = xmin / xmax
+  ) %>% mutate(
+    left_gate = if_else(
+      range >= 1.75, xmin - (xmin * 0.3), xmin - (xmin * 0.7)
+    ) 
+  ) %>% mutate(
+    right_gate = if_else(
+      range >= 1.75, xmax + (0.2 * xmax), xmax + (0.2 * xmax)
+    )
+  )
+  gated <- x %>% dplyr::filter(
+    A >= gates$left_gate,
+    A <= gates$right_gate,
+  ) %>% mutate(
+    Hz = (H - mean(H))/sd(H)
+  ) %>% dplyr::filter(
+    Hz < 10
+  )
+  return(gated)
+}
+
+f_scatter <- function(x){
+  graph <- x %>% ggplot(., aes(x = A, y = H)) + geom_bin_2d(bins = 100) + ggtitle(unique(x$signature)) + scale_fill_viridis_c(alpha = 7/10, name = "Events in bins") + theme(
+    plot.title = element_text(hjust = 0.5),
+    legend.position = c(0.125, 0.75),
+    legend.text = element_text(size = 8),
+    legend.title = element_blank(), 
+    legend.key.size = unit(2.5, "mm")
+  )
+  return(graph)
+}
+
+processed <- fcs %>% lapply(., function(x){
+  x <- x %>% rename(
+    signature = time
+  ) %>% dplyr::filter(
+    A >= 5e4,
+    A <= 4e5
+  )
+}) %>% mclapply(., f_gating, mc.cores = 2) %>% bind_rows(.)
+
+scatter_plots <- processed %>% split(., .$signature) %>% lapply(., f_scatter)
+
+
+```
+
+## Make post-gated figure(s)
+
+```{r make-post, fig.width = 8, fig.height = 6}
+graph1 <- processed %>% split(., .$signature) %>% lapply(., function(x){
+  graph <- x %>% ggplot(., aes(
+    x = A
+  )) + geom_density(alpha = 3/10, lwd = 1.25) + theme(
+    legend.position = c(0.125, 0.75), 
+    legend.title = element_blank()
+  ) + ggtitle(unique(x$signature))
+})
+
+graph2 <- processed %>% split(., .$signature) %>% lapply(., function(x){
+  graph <- x %>% ggplot(., aes(
+    x = A
+  )) + geom_histogram(binwidth = 1000) + ggtitle(
+    unique(x$signature)
+  )
+})
+
+post_gated_figures <- scatter_plots
+for(i in 1:length(post_gated_figures)){
+  post_gated_figures[[i]] <- annotate_figure(
+    ggarrange(
+      ncol = 3, 
+      scatter_plots[[i]] + theme(plot.title = element_blank()), 
+      graph2[[i]] + theme(plot.title = element_blank()),
+      graph1[[i]]) + theme(plot.title = element_blank()), 
+    text_grob(names(scatter_plots)[i], size = 25, family = "Arial", face = "bold")
+  )
+}
+
+post_gated_figures_combined <- ggarrange(
+  ncol = 1, 
+  nrow = length(post_gated_figures), 
+  plotlist = post_gated_figures,
+  labels = LETTERS[c(1:8)], 
+  font.label = list(
+    size = 25, 
+    face = "bold",
+    family = "Arial"
+  )
+)
+```
+
+## Make density plot
+
+```{r combined-density}
+combined_density <- processed %>% ggplot(aes(
+  x = A,
+  color = signature
+)) + geom_density(alpha = 0.75, lwd = 1.25)
+
+
+```
+
+# Results
+
+## Overlay of time points
+
+(ref:by-day) Smoothed density estimates of fluorescence areas measured in the experiment.
+
+```{r by-day, fig.width = 7, fig.height = 4, fig.cap = "(ref:by-day)", out.width = "80%"}
+combined_density
+
+```
+
+
+# Supplemental QC figures
+## Ungated
+
+(ref:ungated-fig) Graphs of ungated data for each of the `r length(post_gated_figures)` experimental samples. For each panel, the leftmost graph contains a scatterplot of fluoresence areas (A) and heights (H), color-coded by event counts. The rightmost graph contains the smoothed density estimate of fluoresence areas measured in an experiment.
+
+```{r ungated-fig, fig.width = 12, fig.height = 20, fig.cap = "(ref:ungated-fig)", out.width = "60%"}
+
+ungated_combined_figures
+```
+
+\newpage
+
+## Post-gated
+
+(ref:post-gated) Graphs of *post*-gated data for each of the `r length(post_gated_figures)` samples. Three graphs comprise each panel. The leftmost contains the scatterplots of fluoresence heights and areas, color-coded by event count. The middle graph contains the histogram of fluoresence areas, while the rightmost graph is smoothed density estimate of fluorescence areas (i.e. smoothing the histogram in the middle panel).
+
+```{r post-gated, fig.width = 14, fig.height = 20, fig.cap = "(ref:post-gated)", out.width = "60%"}
+post_gated_figures_combined
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
