@@ -3,7 +3,7 @@
 This directory contains example Rmd documents and the rendered outputs (document pair = Rmd and rendered PDF). I have included three different types of document pairs. 
 
 # Example one
-The first being an example of an analysis pipeline for flow cytometery experiments in lab. 
+async_analysis_v_2022.Rmd/pdf highlight an analysis pipeline for flow cytometery experiments in lab. 
 
 # Example two
 The second type shows a dynamic document written for a lab protocol. 
