@@ -1,0 +1,339 @@
+---
+title: "Chromosomal scans of su-series"
+date: "2022-03-16"
+output: 
+  bookdown::pdf_document2:
+    latex_engine: xelatex
+    number_sections: no
+    toc: no
+  html_document: default
+params:
+  tiles: 3
+geometry:
+  top=10mm,
+  bottom=18mm,
+  left=10mm,
+  right=10mm
+header-includes:
+  \usepackage{float} \floatplacement{figure}{H}
+urlcolor: "blue"
+bibliography: references.bib
+abstract: |
+  Using Fox/Zhao processing where we normalize per nucleotide coverages for sequencing differences (depth and breadth) before determining S/G1 ratios using strain-specific G1 denominator (suCTRL G1 for suCTRL S and suON G1 for suON S). To control for potential differences in S-phase harvests, we normalize the S/G1 ratio for each strain scaling with the median S/G1 ratio for that strain. After, we remove outliers as defined in Batrakou et al, 2020, and lastly we placed the S/G1 ratios on a "biological" scale by placing values between one and two. The steps mirror those published in Batrakou et al, 2020 with the exception of the S-phase normalization.  
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, error = FALSE, warning = FALSE, tidy = TRUE, tidy.opts = list(indent = 2, width.cutoff = 50), show_col_types = FALSE, dev = "cairo_pdf")
+```
+
+```{r}
+library(parallel)
+library(tidyverse)
+library(ggpubr)
+library(knitr)
+library(kableExtra)
+library(readODS)
+
+extrafont::loadfonts(device = "pdf", quiet = TRUE)
+
+theme_set(theme_classic(base_size = 20, base_family = "Arial"))
+
+```
+
+
+```{r eval = FALSE}
+coverages <- list.files(pattern = "2021_08_02_suON_a_g1_norm_coverage.txt") %>% as_tibble_col("file") %>% split(., .$file) %>% lapply(., function(x){
+  x <- read_tsv(x$file, col_names = T, show_col_types = F)
+})
+```
+
+
+```{r bin, eval = FALSE}
+bin2 <- seq(500, 1.5E6, 1000) %>% as_tibble_col("bin")
+
+bins <- seq(1000,2E6,1000) %>% as_tibble_col("bin") %>% bind_rows(
+  bin2
+) %>% split(., .$bin) %>% lapply(., function(x){
+  bin <- x %>% mutate(
+    start = bin - 999
+  )
+  output <- coverages %>% lapply(., function(x){
+    x <- x %>% filter(
+      start >= bin$start,
+      start <= bin$bin
+    ) %>% mutate(
+      bin = unique(bin$bin)
+      ) %>% group_by(
+      X1, bin, exp
+      ) %>% summarize(
+      bin_norm_total = sum(norm),
+      .groups = "drop"
+    )
+  }) %>% bind_rows(.) 
+  return(output)
+})
+```
+
+```{r eval = FALSE}
+bins_ready <- bins %>% bind_rows() %>% split(., .$exp)
+
+bins_ready %>% lapply(., function(x){
+  write_tsv(x, paste(
+  "2022_03_16",
+  unique(x$exp),
+  "1kbp_tiled_bins_norm_sums.txt",
+  sep = "_"
+  ), 
+  col_names = T
+)
+})
+```
+
+<!-- Read the summed, normalized reads in 1 kbp bins.\     -->
+
+```{r read-bins}
+summed_tiled_bins <- list.files(
+  pattern = "1kbp_tiled_bins_norm_sums.txt"
+) %>% as_tibble_col("file") %>% split(
+  .$file
+) %>% lapply(., function(x){
+  x <- read_tsv(x$file, show_col_types = F)
+}) %>% bind_rows(.) %>% mutate(
+  exp = if_else(
+    exp == "x8699", 
+    "orc2-KR_a_s",
+    if_else(
+      exp == "x8701",
+      "ORC2_a_s",
+      exp
+    )
+  )
+) %>% mutate(
+  key = paste(X1, bin, sep = "_")
+) %>% filter(
+  exp == "suON_a_s" |
+  exp == "suCTRL_a_g1" |
+  exp == "suCTRL_a_s" | 
+  exp == "suON_a_g1"
+)
+```
+
+<!-- Find ratios. -->
+
+```{r find-ratios}
+#All ratios will have suCTRL-a-g1 as a common denominator
+
+ratios <- summed_tiled_bins %>% separate(
+  exp, 
+  c("strain", "rep", "phase"),
+  "_", 
+  remove = F
+) %>% split(., .$strain) %>% lapply(., function(x){
+   x <- x %>% split(., .$key) %>% mclapply(., function(x){
+      x <- x %>% mutate(
+      ratio = bin_norm_total / filter(., .$phase == "g1")$bin_norm_total
+    ) %>% filter(
+      exp != "suCTRL_a_g1"
+    ) %>% separate(
+      exp, 
+      "strain", 
+      "_"
+    )
+  }, mc.cores = 20) %>% bind_rows(.)
+})
+
+```
+
+```{r control-for-sphase}
+scaled <- ratios %>% bind_rows(.) %>% filter(
+  phase != "g1"
+) %>% select(
+  -phase, -rep
+) %>% filter(
+  ratio != Inf
+) %>% na.omit(.) %>% split(., .$strain) %>% lapply(., function(x){
+  x <- x %>% mutate(
+    median_scaled = ratio * median(ratio),
+  )  %>% mutate(
+    X1 = str_remove(X1, "chr"),
+    X1 = as.double(as.roman(X1))
+  ) %>% rename(
+    chr = X1
+  )
+})
+```
+
+
+```{r remove-outliers}
+#An outlier is defined as being any point of data that lies over 1.5 IQRs below the first quartile (Q1) or above the third quartile (Q3)in a data set.
+
+outliers <- scaled %>% bind_rows(.) %>% filter(ratio != 0 | ratio != 0 | ratio != Inf) %>% split(., .$strain) %>% lapply(., function(x){
+  x <- x %>% mutate(
+    iqr = IQR(median_scaled)
+  ) %>% mutate(
+    q1 = quantile(median_scaled)[[2]],
+    q3 = quantile(median_scaled)[[4]]
+  ) %>% mutate(
+    thresh_low = q1 - (q1 * iqr),
+    thresh_high = q3 + (q3 * iqr)
+  ) %>% mutate(
+    outlier = if_else(
+      median_scaled > thresh_low, 
+      if_else(
+        median_scaled < thresh_high,
+        "no",
+        "outlier"
+      ),
+      "outlier"
+    )
+  ) %>% filter(
+    outlier != "outlier"
+  )
+}) 
+
+```
+
+
+
+```{r bio-scale}
+#Place Sphase-normalized ratios between one and two
+
+bio_scaled <- outliers %>% lapply(., function(x){
+  x <- x %>% mutate(
+    bio_ratio = (median_scaled - min(median_scaled))/(max(median_scaled) - min(median_scaled)) + 1
+  )
+})
+
+```
+
+
+```{r read-trep-oris}
+trep_oris <- read_ods("2015_all_410_confirmed_origins_annotated_with_copy_number_Trep.ods",col_names = F) %>% select(A, F) %>% rename(locus = A, type = F) %>% as_tibble(.) %>% filter(type != "NI") %>% mutate(type = as.numeric(type)) %>% mutate(quints = ntile(.$type, 3)) %>% select(locus, quints) %>% rename(type = quints) %>% mutate(
+  type = if_else(
+    type == 1,
+    "E",
+    if_else(
+      type == 2, 
+      "M", 
+      "L"
+    )
+  )
+)
+
+confirmed <- read_tsv("../2018_02_ORC_XChIP_3533_3956/2020_02_13_unique_orcsites_confirmed_saccer3_post_liftover.interval", col_names = F) %>% rename(X6 = X5) %>% mutate(
+  X5 = ifelse(X4 == "+", X2, X3)
+) %>% select(
+  X6, X1, X5
+) %>% rename(
+  locus = X6,
+  chr = X1, 
+  x = X5
+)
+
+oris <- trep_oris %>% left_join(
+  confirmed, 
+  by = "locus"
+) %>% mutate(
+  chr = str_remove(
+    chr, 
+    "chr"
+  ),
+  chr = as.double(as.roman(chr)),
+  x = x/1000
+) %>% mutate(
+  type = factor(
+    type, 
+    c("E", "M", "L")
+  )
+)
+```
+
+
+```{r make-scans}
+f_smoothing <- function(x,y){
+  out <- x %>% split(., .$strain) %>% lapply(., function(x){
+    strain <- unique(x$strain)
+    chr <- unique(x$chr)
+    fit <- smooth.spline(x$bin/1000, x[[y]])
+    ready <- fit$x %>% as_tibble_col("x") %>% mutate(
+      y = fit$y,
+      strain = strain,
+      chr = chr
+    )
+    return(ready)
+  }) %>% bind_rows(.)
+  return(out)
+}
+
+f_scans <- function(x,y){
+  target <- unique(x$chr)
+  ready <- oris %>% filter(., chr == target)
+  graph <- x %>% ggplot() + geom_line(
+    aes(x = x, y = y, col = strain),
+    lwd = 1.25
+  ) + coord_cartesian(
+    ylim = c(0.85, 2.25),
+    xlim = c(1, 1.6E3)
+  ) + labs(
+    x = paste("Chr", unique(x$chr), " position (kbp)", sep = ""),
+    y = "S-phase copy number"
+  ) + theme(
+    legend.position = "bottom",
+    legend.title = element_blank()
+  ) + scale_color_manual(
+    values = y
+  ) + geom_text(
+    data = ready, 
+    aes(
+      x = x, 
+      y = 1,
+      label = type
+    )
+  )
+  return(graph)
+}
+
+f_figuring <- function(x){
+  figure <- ggarrange(
+    ncol = 2, 
+    nrow = 8,
+    plotlist = x,
+    common.legend = T,
+    legend = "bottom"
+  )
+}
+
+smoothed <- bio_scaled %>% bind_rows(.) %>% split(., .$chr) %>% lapply(., f_smoothing, "bio_ratio") %>% bind_rows(.)
+
+
+su_scans <- smoothed %>% mutate(
+  strain = factor(
+    strain, 
+    c("suON", "suCTRL")
+  )
+) %>% split(., .$chr) %>% lapply(., f_scans, c("#008080", "black")) 
+
+su_figure <- su_scans %>% f_figuring(.)
+
+```
+
+
+# Scans
+
+Confirmed origins were placed in three cohorts based on the Trep value measured in Yabuki et al, 2002. Origins with the lowest 1/3 of Trep values, consistent with the earliest replicating origins, are labeled "E". Origins with the highest 1/3 of Trep values, consistent with latest replicating origins, are labeled "L". Origins with values between the two are labeled "M" for middle. 
+
+
+```{r fig.width = 24, fig.height = 6}
+su_scans[["4"]]
+```
+
+```{r fig.width = 44, fig.height = 54}
+su_figure
+```
+
+```{r eval = FALSE}
+ggsave("2022_03_16_su_strainspecific_chr_scan_figure.pdf", su_figure, width = 22, height = 27, dev = cairo_pdf)
+
+```
+
+
