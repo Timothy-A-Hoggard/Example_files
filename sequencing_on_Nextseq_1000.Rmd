@@ -1,0 +1,301 @@
+---
+title: "Sequencing libraries on the NextSeq 1000"
+date: |
+  As of `r Sys.Date()`
+output: 
+  bookdown::pdf_document2:
+    latex_engine: xelatex
+    number_sections: no
+    toc_depth: 3
+  html_document: default
+params: 
+  libraries: 4
+geometry:
+  top=10mm,
+  bottom=14mm,
+  left=11mm,
+  right=11mm
+urlcolor: blue
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE, error = FALSE)
+```
+
+
+```{r}
+library(tidyverse)
+```
+\newpage
+
+# Buffers / reagents 
+
+## Qubit 1x dsDNA HS kit
+
+Fisher Q33230
+
+## Qubit assay tubes
+
+Fisher Q32856
+
+## PhiX control library
+
+Illumina FC-110-3001
+
+## NextSeq 1000 reagent kit
+
+See options [here](https://www.illumina.com/products/by-type/sequencing-kits/cluster-gen-sequencing-reagents/nextseq-1000-2000-reagents.html)
+
+# Steps
+## Day One
+
+### Thaw the cartridge
+
+1. Remove box containing the cartridge from -20°C.\    
+
+2. Remove the cartridge from the box. **Do not remove cartridge from silver foil bag**\    
+
+3. Position cartridge at room temp so that label faces up and air can circulate on sides and top.\    
+
+4. Thaw at room temperature for 6 hours.\    
+
+5. Transfer to 4°C and thaw for at least 12 hours. **Do not exceed 72 hours**\    
+
+### Set up run on Base Space
+
+6. Navigate to this [page](https://basespace.illumina.com/)
+
+7. Click on **RUNS** within the blue section at the top of the page.\    
+
+8. Click "New run" and select "INSTRUMENT RUN SETUP".\    
+
+9. Fill out the information related to your run.\    
+
+    For paired reads, the number of cycles per read should be $\leq$ (total cycles / 2) + 1.\    
+    For example, a P2-300 flow cell can accomodate 150 + 1 cycles per read.\    
+    The NEBNext libraries for Illumina resemble TruSeq libraries and can be trimmed like TruSeq:\    
+      Adaptor Read1   AGATCGGAAGAGCACACGTCTGAACTCCAGTCA\    
+      Adaptor Read2   AGATCGGAAGAGCGTCGTGTAGGGAAAGAGTGT   
+
+
+
+
+
+## Day Two
+### Qubit
+
+*Only use the tubes specific to the Qubit instrument*\    
+
+10. Dilute the high and low standards with 10 $\mu$l of standard : 190 $\mu$l of working buffer.\    
+
+11. Dilute each of your libraries with 1 $\mu$l of library : 199 $\mu$l of working buffer.\    
+
+12. Vortex standards and libraries and then read on the Qubit.\    
+
+
+```{r qubit}
+qubit <- rep("   ", params$libraries) %>% as_tibble_col("library") %>% mutate(
+  `ng/$\\mu$l` = .$library
+)
+
+knitr::kable(
+  qubit, 
+  format = "latex", 
+  escape = F,
+  caption = "Library concentrations as measured by the Qubit",
+  align = "c"
+) %>% kableExtra::kable_styling(
+  latex_options = c("HOLD")
+) %>% kableExtra::column_spec(
+  c(1:2),
+  width = unit(25,"mm")
+)
+```
+
+
+### Convert concentrations to molarity
+
+13. Use the following equation to go from ng/$\mu$l to nM.:\    $$[ng/\mu l] *\ 1/660\ g/mol * 1/average\ library \ size\ (bp)\ * 1E6\ = [nM] $$\    
+
+```{r convert}
+convert <- qubit %>% mutate(
+  nM = .$library
+)
+
+knitr::kable(
+  convert, 
+  format = "latex", 
+  escape = F,
+  caption = "Library concentrations in nM",
+  align = "c"
+) %>% kableExtra::kable_styling(
+  latex_options = c("HOLD")
+) %>% kableExtra::column_spec(
+  c(1:3),
+  width = unit(25,"mm")
+)
+```
+
+
+### Dilute libraries to 2 nM
+
+14. Dilute your libraries to 2 nM using nuclease-free H~2~O
+
+
+```{r working}
+working <- qubit %>% select(
+  library
+) %>% mutate(
+  `Stock (nM)` = .$library
+) %>% mutate(
+  `Working (nM)` = .$library
+)
+
+knitr::kable(
+  working, 
+  format = "latex", 
+  escape = F,
+  caption = "Diluting libraries to [Working]",
+  align = "c"
+) %>% kableExtra::kable_styling(
+  latex_options = c("HOLD")
+) %>% kableExtra::column_spec(
+  c(1:3),
+  width = unit(35,"mm")
+)
+```
+
+
+
+### Determine the target concentration for the pool of libraries to be loaded onto the flow cell.\    
+
+```{r}
+targets <- c(
+  "Ampliseq for Illumina Library PLUS",
+  "Illumina DNA Prep",
+  "Illumina DNA Prep with Enrichment",
+  "Illumina Stranded Total RNA with Ribo-Zero Plus",
+  "Illumina Stranded mRNA Prep",
+  "Illumina DNA PCR-Free",
+  "TruSeq DNA Nano 350a",
+  "TruSeq DNA Nano 550",
+  "TruSeq Stranded mRNA",
+  "100% PhiX"
+) %>% as_tibble_col("Library Type") %>% mutate(
+  `Loading concentration (pM)` = c(
+    750,
+    750,
+    1000,
+    750,
+    750,
+    1000,
+    1200,
+    1500,
+    1000,
+    650
+  )
+)
+
+
+knitr::kable(
+  targets, 
+  caption = "Illumina's suggested loading concentrations for pools containing variously prepared libraries.",
+  align = "c",
+  format = "latex", 
+  booktabs = T
+) %>% kableExtra::kable_styling(
+  latex_options = c("HOLD", "striped")
+) %>% kableExtra::add_footnote(
+  label = "The NEBNext libraries for Illumina are analagous to TruSeq libraries."
+)
+```
+
+15. For this sequencing experiment, we will aim for the following loading concentration **of the pool**: _______\    
+
+    *Pooling concentration is defined by the sum of the molarity of each library within the pool*
+
+
+### Dilute libraries and then pool
+
+*The minimum volume that you will need for the pool is 24 $\mu$l*\    
+*Always aim to pipette at least 2 $\mu$l*\    
+
+16. Use [Illumina's online pooling calculator](https://support.illumina.com/help/pooling-calculator/pooling-calculator.htm) to combine libraries into one pool for loading onto the flow cell.\    
+
+
+```{r eval = FALSE}
+
+
+knitr::kable(
+  target_loading,
+  align = "c", 
+  format = "latex",
+  caption = "Targeted loading concentrations for libraries."
+) %>% kableExtra::kable_styling(
+  latex_options = c("HOLD")
+) %>% kableExtra::column_spec(
+  c(1:2),
+  width = unit(75, "mm")
+)
+```
+
+17. Create your multiplexed pool.\    
+
+```{r}
+target_loading <- c(rep("   ", params$libraries), "RSB with Tween 20") %>% as_tibble_col("library")
+
+pool <- target_loading %>% mutate(
+  `Vol ($\\mu$l)` = "",
+)
+
+knitr::kable(
+  pool, 
+  align = "c", 
+  caption = "Pooling libraries", 
+  format = "latex", 
+  escape = F
+) %>% kableExtra::kable_styling(
+  latex_options = c("HOLD")
+) %>% kableExtra::column_spec(
+  c(1:2),
+  width = unit(35, "mm")
+)
+```
+
+### Prepare PhiX control
+
+*For a ~1% PhiX control...*\    
+
+18. In a Lo-bind tube, add 2 $\mu$l of 10 nM PhiX library to 38 $\mu$l of RSB with Tween 20.\    
+
+19. Vortex briefly and then centrifuge at 280 g x 1'.\    
+
+20. Keep on ice until ready to combine with pool 
+
+### Create loading-ready pool
+
+21. In a fresh Lo-bind tube labeled ready, combine 24 $\mu$l of pooled libraries from above with 1 $\mu$l of PhiX at 0.5 nM.\    
+
+22. Keep on ice until ready to load the flow cell.\    
+
+### Loading the flow cell
+
+23. Remove cartridge *and* flow cell from 4°C and allow to sit at room temperature for at least 15' and no more than 60'.\    
+
+24. Right before loading, remove both cartridge and flow cell from their respective foil bags.\    
+
+25. Invert the *cartridge* ten times.
+
+26. Remove the flow cell from its foil package (use the gray tab with the label on the tab facing up) and push to insert into the front of the cartridge. *You will hear a click*\    
+
+27. Once inserted, pull back and remove the gray tab.\    
+
+28. Using a new P1000 tip, pierce the Library reservoir and push the foil to the edges to enlarge the hole.\    
+
+29. Discard the pipette tip to prevent contamination.\    
+
+30. Add 20 $\mu$l of pool to the *bottom* of the reservoir by slowly lowering the pipette tip to the bottom of the reservoir before dispensing. *Avoid touching the foil*
+
+### Cartridge into the machine
+
+31. Follow instructions given by the machine.
